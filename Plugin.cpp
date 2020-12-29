@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "Plugin.h"
 #include "IExamInterface.h"
-
+#include <algorithm>
 //Called only once, during initialization
 void Plugin::Initialize(IBaseInterface* pInterface, PluginInfo& info)
 {
@@ -11,16 +11,83 @@ void Plugin::Initialize(IBaseInterface* pInterface, PluginInfo& info)
 
 	//Bit information about the plugin
 	//Please fill this in!!
-	info.BotName = "Coward the Cowardly Coward";
+	info.BotName = "Spain but the a is silent";
 	info.Student_FirstName = "Sybran";
 	info.Student_LastName = "Aerts";
 	info.Student_Class = "2DAE1";
 }
 
+Elite::BehaviorState Plugin::Wander()
+{
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	const float radius = 5.f;
+	const float offset = 10.f;
+	constexpr float angleChange = Elite::ToRadians(45);
+	Elite::Vector2 circMid{ agentInfo.Position + agentInfo.LinearVelocity.GetNormalized() * offset };
+	float angle = angleChange * (Elite::randomFloat(2.f) - 1.f);
+	m_WanderAngle += angle;
+	float destx = radius * cos(m_WanderAngle);
+	float desty = radius * sin(m_WanderAngle);
+	Elite::Vector2 dest{ destx,desty };
+	m_Target = dest + circMid;
+	return Elite::BehaviorState::Success;
+}
+Elite::BehaviorState Plugin::FleeFromZombies()
+{
+	auto vThingsInFOV = GetEntitiesInFOV();
+	std::vector<EntityInfo> vZombies(vThingsInFOV.size());
+	auto it = std::copy_if(vThingsInFOV.begin(), vThingsInFOV.end(), vZombies.begin(), [](auto a)->bool {return a.Type == eEntityType::ENEMY; });
+	vZombies.resize(std::distance(vZombies.begin(), it));
+	if(vZombies.size()<=0)
+		return Elite::BehaviorState::Failure;
+	//flee code here, or in another function that gets called here
+	std::cout << "OHNO zombies, i better run the fuck away\n";
+	return Elite::BehaviorState::Success;
+}
 //Called only once
 void Plugin::DllInit()
 {
+
 	//Called when the plugin is loaded
+	//auto vHousesInFOV = GetHousesInFOV();
+	m_pTree = new Elite::BehaviorTree(nullptr,
+		new Elite::BehaviorSelector(
+			{
+				//Flee from the zombies in vision
+				new Elite::BehaviorAction(std::bind(&Plugin::FleeFromZombies, this)),
+
+				//Go inside Current House if it exists
+				new Elite::BehaviorSequence(
+				{
+						new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
+						//std::cout << m_CurrentHouseInfo.Center.x << '\n';
+						return(!(Elite::AreEqual(m_CurrentHouseInfo.Center.x,0.f) && Elite::AreEqual(m_CurrentHouseInfo.Center.y, 0.f)));
+					}),
+				new Elite::BehaviorAction([this](Elite::Blackboard* b) {
+						m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
+						//std::cout << "Going to house\n";
+						return Elite::BehaviorState::Success;
+					})
+				}),
+			//When seeing house, go in house
+			new Elite::BehaviorSequence(
+			{
+					new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
+							auto vHousesInFOV = GetHousesInFOV();
+							return (vHousesInFOV.size() > 0);
+					}),
+					new Elite::BehaviorAction([this](Elite::Blackboard* b) {
+							auto vHousesInFOV = GetHousesInFOV();
+							//Set the current house to the house you saw
+							m_CurrentHouseInfo = vHousesInFOV[0];
+							m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
+							std::cout << "Found house";
+							return Elite::BehaviorState::Success;
+					})
+			}),
+			new Elite::BehaviorAction(std::bind(&Plugin::Wander, this))
+			})
+	);
 }
 
 //Called only once
@@ -87,6 +154,7 @@ void Plugin::Update(float dt)
 //This function calculates the new SteeringOutput, called once per frame
 SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 {
+	m_pTree->Update(dt);
 	auto steering = SteeringPlugin_Output();
 
 	//Use the Interface (IAssignmentInterface) to 'interface' with the AI_Framework
@@ -103,10 +171,16 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 		{
 			PurgeZoneInfo zoneInfo;
 			m_pInterface->PurgeZone_GetInfo(e, zoneInfo);
-			std::cout << "Purge Zone in FOV:" << e.Location.x << ", "<< e.Location.y <<  " ---EntityHash: " << e.EntityHash << "---Radius: "<< zoneInfo.Radius << std::endl;
+			std::cout << "Purge Zone in FOV:" << e.Location.x << ", " << e.Location.y << " ---EntityHash: " << e.EntityHash << "---Radius: " << zoneInfo.Radius << std::endl;
 		}
 	}
-	
+
+	//Go hide in a house like the coward you are
+	//if (vHousesInFOV.size() > 0)
+	//{
+	//nextTargetPos = m_pInterface->NavMesh_GetClosestPathPoint(vHousesInFOV[0].Center-vHousesInFOV[0].Size/2);
+	//}
+
 
 	//INVENTORY USAGE DEMO
 	//********************
@@ -154,7 +228,6 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 	steering.RunMode = m_CanRun; //If RunMode is True > MaxLinSpd is increased for a limited time (till your stamina runs out)
 
 								 //SteeringPlugin_Output is works the exact same way a SteeringBehaviour output
-
 								 //@End (Demo Purposes)
 	m_GrabItem = false; //Reset State
 	m_UseItem = false;

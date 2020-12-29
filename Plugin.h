@@ -1,6 +1,7 @@
 #pragma once
 #include "IExamPlugin.h"
 #include "Exam_HelperStructs.h"
+#include "EBehaviorTree.h"
 
 class IBaseInterface;
 class IExamInterface;
@@ -33,6 +34,15 @@ private:
 	bool m_UseItem = false; //Demo purpose
 	bool m_RemoveItem = false; //Demo purpose
 	float m_AngSpeed = 0.f; //Demo purpose
+
+	//MyMemberVars
+	Elite::BehaviorTree* m_pTree{};
+	float m_WanderAngle=0.f;
+	HouseInfo m_CurrentHouseInfo{};	
+	
+	//MyMemberFunctions
+	Elite::BehaviorState Wander();
+	Elite::BehaviorState FleeFromZombies();
 };
 
 //ENTRY
