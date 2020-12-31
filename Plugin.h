@@ -33,16 +33,24 @@ private:
 	bool m_GrabItem = false; //Demo purpose
 	bool m_UseItem = false; //Demo purpose
 	bool m_RemoveItem = false; //Demo purpose
-	float m_AngSpeed = 0.f; //Demo purpose
+	float m_AngSpeed = 50.f; //Demo purpose
 
 	//MyMemberVars
 	Elite::BehaviorTree* m_pTree{};
 	float m_WanderAngle=0.f;
 	HouseInfo m_CurrentHouseInfo{};	
-	
+	SteeringPlugin_Output m_Steering;
+	Elite::Vector2 m_FleePoint{};
+	bool m_IsFleeing{};
+	float m_FleeTime{};
+	const float m_WorldRadius{250.f};
 	//MyMemberFunctions
+	void Seek(const Elite::Vector2& target);
+	void Flee(const Elite::Vector2& target);
+	void NavFlee(const Elite::Vector2& target);
 	Elite::BehaviorState Wander();
 	Elite::BehaviorState FleeFromZombies();
+	void UpdateTimers(float dt);
 };
 
 //ENTRY

@@ -2,6 +2,7 @@
 #include "Plugin.h"
 #include "IExamInterface.h"
 #include <algorithm>
+#include <numeric>
 //Called only once, during initialization
 void Plugin::Initialize(IBaseInterface* pInterface, PluginInfo& info)
 {
@@ -17,11 +18,41 @@ void Plugin::Initialize(IBaseInterface* pInterface, PluginInfo& info)
 	info.Student_Class = "2DAE1";
 }
 
+void Plugin::Seek(const Elite::Vector2& target)
+{
+	//Simple Seek Behaviour (towards Target)
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	m_Steering.LinearVelocity = target - agentInfo.Position; //Desired Velocity
+	m_Steering.LinearVelocity.Normalize(); //Normalize Desired Velocity
+	m_Steering.LinearVelocity *= agentInfo.MaxLinearSpeed; //Rescale to Max Speed
+	//m_Steering.AutoOrient = false;
+}
+
+void Plugin::Flee(const Elite::Vector2& target)
+{
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	m_Steering.LinearVelocity = agentInfo.Position - target; //Desired Velocity
+	m_Steering.LinearVelocity.Normalize(); //Normalize Desired Velocity
+	m_Steering.LinearVelocity *= agentInfo.MaxLinearSpeed; //Rescale to Max Speed
+}
+
+void Plugin::NavFlee(const Elite::Vector2& target)
+{	
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	m_Steering.LinearVelocity = agentInfo.Position -  target; //Desired Velocity
+	m_Steering.LinearVelocity.Normalize(); //Normalize Desired Velocity
+	m_Steering.LinearVelocity *= agentInfo.MaxLinearSpeed; //Rescale to Max Speed
+	const Elite::Vector2 fleeTowardsTarget = agentInfo.Position+(m_Steering.LinearVelocity * m_Steering.LinearVelocity.Magnitude());
+	m_pInterface->Draw_Direction(agentInfo.Position, m_Steering.LinearVelocity, m_Steering.LinearVelocity.Magnitude(), {0,0,1});
+	const Elite::Vector2 t = m_pInterface->NavMesh_GetClosestPathPoint(fleeTowardsTarget);
+	Seek(t);
+}
+
 Elite::BehaviorState Plugin::Wander()
 {
 	auto agentInfo = m_pInterface->Agent_GetInfo();
 	const float radius = 5.f;
-	const float offset = 10.f;
+	const float offset = 20.f;
 	constexpr float angleChange = Elite::ToRadians(45);
 	Elite::Vector2 circMid{ agentInfo.Position + agentInfo.LinearVelocity.GetNormalized() * offset };
 	float angle = angleChange * (Elite::randomFloat(2.f) - 1.f);
@@ -29,20 +60,69 @@ Elite::BehaviorState Plugin::Wander()
 	float destx = radius * cos(m_WanderAngle);
 	float desty = radius * sin(m_WanderAngle);
 	Elite::Vector2 dest{ destx,desty };
-	m_Target = dest + circMid;
+	m_pInterface->Draw_Circle(circMid, radius, { 1,0,1 });
+	if (Elite::DistanceSquared(agentInfo.Position, { 0,0 }) > Elite::Square(m_WorldRadius))
+		m_Target = { 0,0 };
+	else
+		m_Target = dest + circMid;
+	
+	m_Steering.AutoOrient = false;
+	auto nextTarget = m_pInterface->NavMesh_GetClosestPathPoint(m_Target);
+	Seek(nextTarget);
 	return Elite::BehaviorState::Success;
 }
 Elite::BehaviorState Plugin::FleeFromZombies()
 {
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	const float houseFleeRadius{10};
+
 	auto vThingsInFOV = GetEntitiesInFOV();
 	std::vector<EntityInfo> vZombies(vThingsInFOV.size());
 	auto it = std::copy_if(vThingsInFOV.begin(), vThingsInFOV.end(), vZombies.begin(), [](auto a)->bool {return a.Type == eEntityType::ENEMY; });
 	vZombies.resize(std::distance(vZombies.begin(), it));
-	if(vZombies.size()<=0)
+	if (m_IsFleeing == true)
+	{
+		if (!agentInfo.IsInHouse)
+			NavFlee(m_FleePoint);
+		else
+			Flee(m_FleePoint);
+		m_CanRun = true;
+		//m_CurrentHouseInfo = {}; //Remove the current house
+		m_Steering.AutoOrient = false;
+		return Elite::BehaviorState::Success;
+	}
+	else if (vZombies.size()<=0)
+	{
+		m_CanRun = false;
 		return Elite::BehaviorState::Failure;
-	//flee code here, or in another function that gets called here
-	std::cout << "OHNO zombies, i better run the fuck away\n";
+	}
+
+	//CALCULATE AVERAGE ZOMBIE 
+	Elite::Vector2 avPos{};
+	for (const auto& zombie : vZombies)
+	{
+		avPos += zombie.Location;
+	}
+	avPos /= vZombies.size();
+	m_FleePoint = avPos;
+	m_IsFleeing = true;
+	m_FleeTime = vZombies.size()* 3.f; //set timer for fleeing to X seconds
+
+	//NavFlee(m_FleePoint);
+	std::cout << m_IsFleeing<<std::endl;
 	return Elite::BehaviorState::Success;
+}
+void Plugin::UpdateTimers(float dt)
+{
+	if (m_FleeTime > 0)
+		m_FleeTime -= dt;
+	else
+	{
+		m_IsFleeing = false;
+		m_FleeTime = 0;
+		m_CanRun = false;
+		std::cout << m_IsFleeing<<std::endl;
+	}
 }
 //Called only once
 void Plugin::DllInit()
@@ -63,13 +143,23 @@ void Plugin::DllInit()
 						//std::cout << m_CurrentHouseInfo.Center.x << '\n';
 						return(!(Elite::AreEqual(m_CurrentHouseInfo.Center.x,0.f) && Elite::AreEqual(m_CurrentHouseInfo.Center.y, 0.f)));
 					}),
-				new Elite::BehaviorAction([this](Elite::Blackboard* b) {
+						new Elite::BehaviorAction([this](Elite::Blackboard* b) {
+						auto agentInfo = m_pInterface->Agent_GetInfo();
+						const float leaveDistance{30};
+						m_Steering.AutoOrient = true;
 						m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
+						m_pInterface->Draw_Circle(m_Target, leaveDistance, { 1,1,0 });
+						if (Elite::Distance(m_Target, agentInfo.Position) > leaveDistance)
+						{
+							m_CurrentHouseInfo = {};
+							return Elite::BehaviorState::Failure;
+						}
+						Seek(m_Target);
 						//std::cout << "Going to house\n";
 						return Elite::BehaviorState::Success;
 					})
 				}),
-			//When seeing house, go in house
+			//When see house, go in house
 			new Elite::BehaviorSequence(
 			{
 					new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
@@ -81,6 +171,7 @@ void Plugin::DllInit()
 							//Set the current house to the house you saw
 							m_CurrentHouseInfo = vHousesInFOV[0];
 							m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
+							Seek(m_Target);
 							std::cout << "Found house";
 							return Elite::BehaviorState::Success;
 					})
@@ -155,7 +246,9 @@ void Plugin::Update(float dt)
 SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 {
 	m_pTree->Update(dt);
-	auto steering = SteeringPlugin_Output();
+	UpdateTimers(dt);
+
+	//auto steering = SteeringPlugin_Output();
 
 	//Use the Interface (IAssignmentInterface) to 'interface' with the AI_Framework
 	auto agentInfo = m_pInterface->Agent_GetInfo();
@@ -174,13 +267,6 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 			std::cout << "Purge Zone in FOV:" << e.Location.x << ", " << e.Location.y << " ---EntityHash: " << e.EntityHash << "---Radius: " << zoneInfo.Radius << std::endl;
 		}
 	}
-
-	//Go hide in a house like the coward you are
-	//if (vHousesInFOV.size() > 0)
-	//{
-	//nextTargetPos = m_pInterface->NavMesh_GetClosestPathPoint(vHousesInFOV[0].Center-vHousesInFOV[0].Size/2);
-	//}
-
 
 	//INVENTORY USAGE DEMO
 	//********************
@@ -212,20 +298,22 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 		m_pInterface->Inventory_RemoveItem(0);
 	}
 
-	//Simple Seek Behaviour (towards Target)
-	steering.LinearVelocity = nextTargetPos - agentInfo.Position; //Desired Velocity
-	steering.LinearVelocity.Normalize(); //Normalize Desired Velocity
-	steering.LinearVelocity *= agentInfo.MaxLinearSpeed; //Rescale to Max Speed
+	////Simple Seek Behaviour (towards Target)
+	//m_Steering.LinearVelocity = nextTargetPos - agentInfo.Position; //Desired Velocity
+	//m_Steering.LinearVelocity.Normalize(); //Normalize Desired Velocity
+	//m_Steering.LinearVelocity *= agentInfo.MaxLinearSpeed; //Rescale to Max Speed
+	//Seek(nextTargetPos);
 
-	if (Distance(nextTargetPos, agentInfo.Position) < 2.f)
-	{
-		steering.LinearVelocity = Elite::ZeroVector2;
-	}
+	//if (Distance(nextTargetPos, agentInfo.Position) < 2.f)
+	//{
+	//	m_Steering.LinearVelocity = Elite::ZeroVector2;
+	//}
 
-	//steering.AngularVelocity = m_AngSpeed; //Rotate your character to inspect the world while walking
-	steering.AutoOrient = true; //Setting AutoOrientate to TRue overrides the AngularVelocity
+	m_AngSpeed = agentInfo.MaxAngularSpeed;
+	m_Steering.AngularVelocity = m_AngSpeed; //Rotate your character to inspect the world while walking
+	//m_Steering.AutoOrient = false; //Setting AutoOrientate to TRue overrides the AngularVelocity
 
-	steering.RunMode = m_CanRun; //If RunMode is True > MaxLinSpd is increased for a limited time (till your stamina runs out)
+	m_Steering.RunMode = m_CanRun; //If RunMode is True > MaxLinSpd is increased for a limited time (till your stamina runs out)
 
 								 //SteeringPlugin_Output is works the exact same way a SteeringBehaviour output
 								 //@End (Demo Purposes)
@@ -233,14 +321,18 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 	m_UseItem = false;
 	m_RemoveItem = false;
 
-	return steering;
+	return m_Steering;
 }
 
 //This function should only be used for rendering debug elements
 void Plugin::Render(float dt) const
 {
+	auto agentInfo = m_pInterface->Agent_GetInfo();
 	//This Render function should only contain calls to Interface->Draw_... functions
 	m_pInterface->Draw_SolidCircle(m_Target, .7f, { 0,0 }, { 1, 0, 0 });
+	//m_pInterface->Draw_Segment(agentInfo.Position, m_Steering.LinearVelocity, { 0,0,1 });
+	m_pInterface->Draw_Circle({ 0,0 }, m_WorldRadius, { 0,1,1 });
+	//m_pInterface->Draw_Circle(agentInfo.Position, 10, { 0,1,1 });
 }
 
 vector<HouseInfo> Plugin::GetHousesInFOV() const
