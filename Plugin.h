@@ -42,8 +42,18 @@ private:
 	SteeringPlugin_Output m_Steering;
 	Elite::Vector2 m_FleePoint{};
 	bool m_IsFleeing{};
+	bool m_IsNavFleeActivated{};
 	float m_FleeTime{};
 	const float m_WorldRadius{250.f};
+	bool m_NeedToGetMeSomeItems{ };
+
+	struct HouseCoords
+	{
+		Elite::Vector2 center;
+		Elite::Vector2 size;
+	};
+	std::vector<HouseCoords> m_VisitedHouses;
+
 	//MyMemberFunctions
 	void Seek(const Elite::Vector2& target);
 	void Flee(const Elite::Vector2& target);
@@ -51,6 +61,11 @@ private:
 	Elite::BehaviorState Wander();
 	Elite::BehaviorState FleeFromZombies();
 	void UpdateTimers(float dt);
+	Elite::BehaviorState GrabItems();
+	Elite::BehaviorState EatFood();
+	Elite::BehaviorState UseMedkit();
+	Elite::BehaviorState GoOutOfTheFuckinHouseMate();
+	void DiscardEmptyItems();
 };
 
 //ENTRY

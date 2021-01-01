@@ -12,7 +12,7 @@ void Plugin::Initialize(IBaseInterface* pInterface, PluginInfo& info)
 
 	//Bit information about the plugin
 	//Please fill this in!!
-	info.BotName = "Spain but the a is silent";
+	info.BotName = "Spain the Coward";
 	info.Student_FirstName = "Sybran";
 	info.Student_LastName = "Aerts";
 	info.Student_Class = "2DAE1";
@@ -82,9 +82,16 @@ Elite::BehaviorState Plugin::FleeFromZombies()
 	vZombies.resize(std::distance(vZombies.begin(), it));
 	if (m_IsFleeing == true)
 	{
-		if (!agentInfo.IsInHouse)
+		if(vZombies.size() > 0 && std::any_of(vZombies.begin(), vZombies.end(), [agentInfo, houseFleeRadius](const EntityInfo& z)->bool {
+			return (Elite::DistanceSquared(agentInfo.Position, z.Location) < Elite::Square(houseFleeRadius));
+			}))
+			m_IsNavFleeActivated = true;
+
+		if (!agentInfo.IsInHouse || m_IsNavFleeActivated==true)
+		{
 			NavFlee(m_FleePoint);
-		else
+		}
+		else if(m_IsNavFleeActivated==false)
 			Flee(m_FleePoint);
 		m_CanRun = true;
 		//m_CurrentHouseInfo = {}; //Remove the current house
@@ -103,13 +110,24 @@ Elite::BehaviorState Plugin::FleeFromZombies()
 	{
 		avPos += zombie.Location;
 	}
-	avPos /= vZombies.size();
+	avPos /= float(vZombies.size());
 	m_FleePoint = avPos;
 	m_IsFleeing = true;
 	m_FleeTime = vZombies.size()* 3.f; //set timer for fleeing to X seconds
 
-	//NavFlee(m_FleePoint);
-	std::cout << m_IsFleeing<<std::endl;
+	//if (!agentInfo.IsInHouse ||
+	//	(vZombies.size() > 0 && std::any_of(vZombies.begin(), vZombies.end(), [agentInfo, houseFleeRadius](auto z)->bool {
+	//		return Elite::Distance(z.Location, agentInfo.Position) > Elite::Square(houseFleeRadius);
+	//		})))
+	//{
+	//	m_IsFleeing = true;
+	//	NavFlee(m_FleePoint);
+	//}
+	//else
+	//	Flee(m_FleePoint);
+
+	NavFlee(m_FleePoint);
+	//std::cout << m_IsFleeing<<std::endl;
 	return Elite::BehaviorState::Success;
 }
 void Plugin::UpdateTimers(float dt)
@@ -119,9 +137,157 @@ void Plugin::UpdateTimers(float dt)
 	else
 	{
 		m_IsFleeing = false;
+		m_IsNavFleeActivated = false;
 		m_FleeTime = 0;
 		m_CanRun = false;
-		std::cout << m_IsFleeing<<std::endl;
+		//std::cout << m_IsFleeing<<std::endl;
+	}
+}
+Elite::BehaviorState Plugin::GrabItems()	//No priority implemented yet
+{
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+
+	auto vThingsInFOV = GetEntitiesInFOV();
+	if (vThingsInFOV.empty())
+		return Elite::BehaviorState::Failure;
+	std::vector<EntityInfo> vItems(vThingsInFOV.size());
+	auto it = std::copy_if(vThingsInFOV.begin(), vThingsInFOV.end(), vItems.begin(), [](auto a)->bool {return a.Type == eEntityType::ITEM; });
+	vItems.resize(std::distance(vItems.begin(), it));
+	if (vItems.empty())
+		return Elite::BehaviorState::Failure;
+	ItemInfo currentItem;
+	m_pInterface->Item_GetInfo(vItems[0], currentItem);
+	Seek(currentItem.Location);
+	if (Elite::DistanceSquared(currentItem.Location, agentInfo.Position) < agentInfo.GrabRange)
+	{
+		const UINT invCap = m_pInterface->Inventory_GetCapacity();
+		for (UINT i{}; i < invCap; i++)
+		{
+			//m_pInterface->Item_Grab(vItems[0], currentItem);
+			m_pInterface->Item_Grab(vItems[0], currentItem);
+			const bool isInvSlotEmpty = m_pInterface->Inventory_AddItem(i, currentItem);
+			if (isInvSlotEmpty)
+				break;
+		}
+	}
+
+	return Elite::BehaviorState::Success;
+}
+Elite::BehaviorState Plugin::EatFood()
+{
+	//Search inventory for food and eat it if Energy below certain value
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	const float useValue = 5.f;
+	if (agentInfo.Energy <= useValue)
+	{
+		ItemInfo currentItem;
+		const UINT invCap=m_pInterface->Inventory_GetCapacity();
+		bool itemFound{};
+		UINT itemSlot{};
+		for (UINT i{}; i < invCap; i++)
+		{
+			m_pInterface->Inventory_GetItem(i, currentItem);
+			if (currentItem.Type == eItemType::FOOD)
+			{
+				itemFound = true;
+				itemSlot = i;
+				break;
+			}
+		}
+		if (itemFound)
+		{
+			m_pInterface->Inventory_UseItem(itemSlot);
+			m_NeedToGetMeSomeItems = false;
+			return Elite::BehaviorState::Success;
+		}
+		else
+		{
+			std::cout << "I have no food and I am now very hungry :( \n";
+			m_NeedToGetMeSomeItems = true;
+		}
+	}
+
+	return Elite::BehaviorState::Failure;
+}
+Elite::BehaviorState Plugin::UseMedkit()
+{
+	//Search inventory for food and eat it if Energy below certain value
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+	const float useValue = 6.f;
+	if (agentInfo.Health <= useValue)
+	{
+		ItemInfo currentItem;
+		const UINT invCap = m_pInterface->Inventory_GetCapacity();
+		bool itemFound{};
+		UINT itemSlot{};
+		for (UINT i{}; i < invCap; i++)
+		{
+			m_pInterface->Inventory_GetItem(i, currentItem);
+			if (currentItem.Type == eItemType::MEDKIT)
+			{
+				itemFound = true;
+				itemSlot = i;
+				break;
+			}
+		}
+		if (itemFound)
+		{
+			m_pInterface->Inventory_UseItem(itemSlot);
+			m_NeedToGetMeSomeItems = false;
+			return Elite::BehaviorState::Success;
+		}
+		else
+		{
+			std::cout << "I have no medkit and I am very hurt :( \n";
+			m_NeedToGetMeSomeItems = true;
+		}
+	}
+
+	return Elite::BehaviorState::Failure;
+}
+Elite::BehaviorState Plugin::GoOutOfTheFuckinHouseMate()
+{
+	//const auto agentInfo = m_pInterface->Agent_GetInfo();
+	//HouseCoords currentHouseCoords{ m_CurrentHouseInfo.Center, m_CurrentHouseInfo.Size };
+	//m_VisitedHouses.push_back(currentHouseCoords);
+	NavFlee(m_CurrentHouseInfo.Center);
+	return Elite::BehaviorState::Success;
+}
+void Plugin::DiscardEmptyItems()
+{
+	const UINT invCap=m_pInterface->Inventory_GetCapacity();
+	ItemInfo currentItem{};
+	for (UINT i{}; i < invCap; i++)
+	{
+		m_pInterface->Inventory_GetItem(i, currentItem);
+		switch (currentItem.Type)
+		{
+		case eItemType::PISTOL:
+			break;
+		case eItemType::MEDKIT:
+		{
+			const int h = m_pInterface->Medkit_GetHealth(currentItem);
+			if (h <= 0)
+				m_pInterface->Inventory_RemoveItem(i);
+		}
+			break;
+		case eItemType::FOOD:
+		{
+			const int e = m_pInterface->Food_GetEnergy(currentItem);
+			if (e <= 0)
+				m_pInterface->Inventory_RemoveItem(i);
+		}
+			break;
+		case eItemType::GARBAGE:
+			m_pInterface->Inventory_RemoveItem(i);
+			break;
+		//case eItemType::RANDOM_DROP:
+		//	break;
+		//case eItemType::RANDOM_DROP_WITH_CHANCE:
+		//	break;
+		default:
+			break;
+		}
 	}
 }
 //Called only once
@@ -133,8 +299,23 @@ void Plugin::DllInit()
 	m_pTree = new Elite::BehaviorTree(nullptr,
 		new Elite::BehaviorSelector(
 			{
+
+				//Use items
+				new Elite::BehaviorAction(std::bind(&Plugin::UseMedkit, this)),
+				new Elite::BehaviorAction(std::bind(&Plugin::EatFood, this)),
+				
+				//Grab items in range (place below zombies later, is here for debug)
+				new Elite::BehaviorAction(std::bind(&Plugin::GrabItems, this)),
 				//Flee from the zombies in vision
 				new Elite::BehaviorAction(std::bind(&Plugin::FleeFromZombies, this)),
+
+				//leave house to look for items
+				new Elite::BehaviorSequence({
+						new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
+								return m_pInterface->Agent_GetInfo().IsInHouse && m_NeedToGetMeSomeItems;
+							}),
+						new Elite::BehaviorAction(std::bind(&Plugin::GoOutOfTheFuckinHouseMate, this))
+				}),
 
 				//Go inside Current House if it exists
 				new Elite::BehaviorSequence(
@@ -145,7 +326,7 @@ void Plugin::DllInit()
 					}),
 						new Elite::BehaviorAction([this](Elite::Blackboard* b) {
 						auto agentInfo = m_pInterface->Agent_GetInfo();
-						const float leaveDistance{30};
+						const float leaveDistance{20};
 						m_Steering.AutoOrient = true;
 						m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
 						m_pInterface->Draw_Circle(m_Target, leaveDistance, { 1,1,0 });
@@ -159,9 +340,9 @@ void Plugin::DllInit()
 						return Elite::BehaviorState::Success;
 					})
 				}),
-			//When see house, go in house
-			new Elite::BehaviorSequence(
-			{
+				//When see house, go in house
+				new Elite::BehaviorSequence(
+				{
 					new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
 							auto vHousesInFOV = GetHousesInFOV();
 							return (vHousesInFOV.size() > 0);
@@ -176,7 +357,9 @@ void Plugin::DllInit()
 							return Elite::BehaviorState::Success;
 					})
 			}),
-			new Elite::BehaviorAction(std::bind(&Plugin::Wander, this))
+
+				//By default wander the world
+				new Elite::BehaviorAction(std::bind(&Plugin::Wander, this))
 			})
 	);
 }
@@ -247,7 +430,7 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 {
 	m_pTree->Update(dt);
 	UpdateTimers(dt);
-
+	DiscardEmptyItems();
 	//auto steering = SteeringPlugin_Output();
 
 	//Use the Interface (IAssignmentInterface) to 'interface' with the AI_Framework
