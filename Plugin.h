@@ -45,14 +45,11 @@ private:
 	bool m_IsNavFleeActivated{};
 	float m_FleeTime{};
 	const float m_WorldRadius{250.f};
-	bool m_NeedToGetMeSomeItems{ };
-
-	struct HouseCoords
-	{
-		Elite::Vector2 center;
-		Elite::Vector2 size;
-	};
-	std::vector<HouseCoords> m_VisitedHouses;
+	bool m_NeedToGetOutOfHouse{ };
+	std::vector<Elite::Vector2> m_EmptyHousesCoords;
+	eItemType m_ItemLookingFor{eItemType::_LAST};
+	float m_StayInHouseTimer{};
+	bool m_IsHouseTimerSet{};
 
 	//MyMemberFunctions
 	void Seek(const Elite::Vector2& target);
@@ -64,7 +61,7 @@ private:
 	Elite::BehaviorState GrabItems();
 	Elite::BehaviorState EatFood();
 	Elite::BehaviorState UseMedkit();
-	Elite::BehaviorState GoOutOfTheFuckinHouseMate();
+	Elite::BehaviorState GoOutOfHouse();
 	void DiscardEmptyItems();
 };
 

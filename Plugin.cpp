@@ -54,19 +54,25 @@ Elite::BehaviorState Plugin::Wander()
 	const float radius = 5.f;
 	const float offset = 20.f;
 	constexpr float angleChange = Elite::ToRadians(45);
+
+	const float nearDistance{ 2.5f };
 	Elite::Vector2 circMid{ agentInfo.Position + agentInfo.LinearVelocity.GetNormalized() * offset };
-	float angle = angleChange * (Elite::randomFloat(2.f) - 1.f);
-	m_WanderAngle += angle;
-	float destx = radius * cos(m_WanderAngle);
-	float desty = radius * sin(m_WanderAngle);
-	Elite::Vector2 dest{ destx,desty };
-	m_pInterface->Draw_Circle(circMid, radius, { 1,0,1 });
-	if (Elite::DistanceSquared(agentInfo.Position, { 0,0 }) > Elite::Square(m_WorldRadius))
-		m_Target = { 0,0 };
-	else
-		m_Target = dest + circMid;
-	
+
+	//if (Elite::DistanceSquared(agentInfo.Position, m_Target) < Elite::Square(nearDistance))
+	//{
+		float angle = angleChange * (Elite::randomFloat(2.f) - 1.f);
+		m_WanderAngle += angle;
+		float destx = radius * cos(m_WanderAngle);
+		float desty = radius * sin(m_WanderAngle);
+		Elite::Vector2 dest{ destx,desty };
+		
+		if (Elite::DistanceSquared(agentInfo.Position, { 0,0 }) > Elite::Square(m_WorldRadius))
+			m_Target = { 0,0 };
+		else
+			m_Target = dest + circMid;
+	//}
 	m_Steering.AutoOrient = false;
+	m_pInterface->Draw_Circle(circMid, radius, { 1,0,1 });
 	auto nextTarget = m_pInterface->NavMesh_GetClosestPathPoint(m_Target);
 	Seek(nextTarget);
 	return Elite::BehaviorState::Success;
@@ -142,6 +148,14 @@ void Plugin::UpdateTimers(float dt)
 		m_CanRun = false;
 		//std::cout << m_IsFleeing<<std::endl;
 	}
+
+	if (m_StayInHouseTimer > 0)
+		m_StayInHouseTimer -= dt;
+	else if (m_pInterface->Agent_GetInfo().IsInHouse && m_IsHouseTimerSet)
+	{
+		m_IsHouseTimerSet = false;
+		m_NeedToGetOutOfHouse = true;
+	}
 }
 Elite::BehaviorState Plugin::GrabItems()	//No priority implemented yet
 {
@@ -168,6 +182,17 @@ Elite::BehaviorState Plugin::GrabItems()	//No priority implemented yet
 			const bool isInvSlotEmpty = m_pInterface->Inventory_AddItem(i, currentItem);
 			if (isInvSlotEmpty)
 				break;
+		}
+		if (currentItem.Type == m_ItemLookingFor )
+		{
+			m_StayInHouseTimer = 0;
+			m_IsHouseTimerSet = false;
+			m_ItemLookingFor = eItemType::_LAST;
+		}
+		else if(m_ItemLookingFor != eItemType::_LAST)
+		{
+			m_StayInHouseTimer = 3.5f;
+			m_IsHouseTimerSet = true;
 		}
 	}
 
@@ -197,13 +222,14 @@ Elite::BehaviorState Plugin::EatFood()
 		if (itemFound)
 		{
 			m_pInterface->Inventory_UseItem(itemSlot);
-			m_NeedToGetMeSomeItems = false;
+			//m_NeedToGetOutOfHouse = false;
 			return Elite::BehaviorState::Success;
 		}
-		else
+		else if(agentInfo.Energy+0.2f > useValue)
 		{
 			std::cout << "I have no food and I am now very hungry :( \n";
-			m_NeedToGetMeSomeItems = true;
+			m_NeedToGetOutOfHouse = true;
+			m_ItemLookingFor = eItemType::FOOD;
 		}
 	}
 
@@ -233,23 +259,32 @@ Elite::BehaviorState Plugin::UseMedkit()
 		if (itemFound)
 		{
 			m_pInterface->Inventory_UseItem(itemSlot);
-			m_NeedToGetMeSomeItems = false;
+			m_NeedToGetOutOfHouse = false;
 			return Elite::BehaviorState::Success;
 		}
 		else
 		{
 			std::cout << "I have no medkit and I am very hurt :( \n";
-			m_NeedToGetMeSomeItems = true;
+			m_NeedToGetOutOfHouse = true;
 		}
 	}
 
 	return Elite::BehaviorState::Failure;
 }
-Elite::BehaviorState Plugin::GoOutOfTheFuckinHouseMate()
+Elite::BehaviorState Plugin::GoOutOfHouse()
 {
-	//const auto agentInfo = m_pInterface->Agent_GetInfo();
-	//HouseCoords currentHouseCoords{ m_CurrentHouseInfo.Center, m_CurrentHouseInfo.Size };
-	//m_VisitedHouses.push_back(currentHouseCoords);
+	if (!m_NeedToGetOutOfHouse)
+		return Elite::BehaviorState::Failure;
+	else if (!m_pInterface->Agent_GetInfo().IsInHouse)
+	{
+		m_NeedToGetOutOfHouse = false;
+		return Elite::BehaviorState::Failure;
+	}
+	auto it = std::find(m_EmptyHousesCoords.begin(), m_EmptyHousesCoords.end(), m_CurrentHouseInfo.Center);
+	if (it == m_EmptyHousesCoords.end())
+	{
+		m_EmptyHousesCoords.push_back(m_CurrentHouseInfo.Center);
+	}
 	NavFlee(m_CurrentHouseInfo.Center);
 	return Elite::BehaviorState::Success;
 }
@@ -257,12 +292,18 @@ void Plugin::DiscardEmptyItems()
 {
 	const UINT invCap=m_pInterface->Inventory_GetCapacity();
 	ItemInfo currentItem{};
+	currentItem.Type = eItemType::_LAST;
 	for (UINT i{}; i < invCap; i++)
 	{
 		m_pInterface->Inventory_GetItem(i, currentItem);
 		switch (currentItem.Type)
 		{
 		case eItemType::PISTOL:
+		{
+			const int a = m_pInterface->Weapon_GetAmmo(currentItem);
+			if (a <= 0)
+				m_pInterface->Inventory_RemoveItem(i);
+		}
 			break;
 		case eItemType::MEDKIT:
 		{
@@ -311,52 +352,56 @@ void Plugin::DllInit()
 
 				//leave house to look for items
 				new Elite::BehaviorSequence({
-						new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
-								return m_pInterface->Agent_GetInfo().IsInHouse && m_NeedToGetMeSomeItems;
-							}),
-						new Elite::BehaviorAction(std::bind(&Plugin::GoOutOfTheFuckinHouseMate, this))
+						//new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
+						//		return m_pInterface->Agent_GetInfo().IsInHouse && m_NeedToGetOutOfHouse;
+						//	}),
+						new Elite::BehaviorAction(std::bind(&Plugin::GoOutOfHouse, this))
 				}),
 
 				//Go inside Current House if it exists
 				new Elite::BehaviorSequence(
 				{
-						new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
-						//std::cout << m_CurrentHouseInfo.Center.x << '\n';
-						return(!(Elite::AreEqual(m_CurrentHouseInfo.Center.x,0.f) && Elite::AreEqual(m_CurrentHouseInfo.Center.y, 0.f)));
-					}),
-						new Elite::BehaviorAction([this](Elite::Blackboard* b) {
-						auto agentInfo = m_pInterface->Agent_GetInfo();
-						const float leaveDistance{20};
-						m_Steering.AutoOrient = true;
-						m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
-						m_pInterface->Draw_Circle(m_Target, leaveDistance, { 1,1,0 });
-						if (Elite::Distance(m_Target, agentInfo.Position) > leaveDistance)
-						{
-							m_CurrentHouseInfo = {};
-							return Elite::BehaviorState::Failure;
-						}
-						Seek(m_Target);
-						//std::cout << "Going to house\n";
-						return Elite::BehaviorState::Success;
-					})
-				}),
+								new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
+								//std::cout << m_CurrentHouseInfo.Center.x << '\n';
+								return(!(Elite::AreEqual(m_CurrentHouseInfo.Center.x,0.f) && Elite::AreEqual(m_CurrentHouseInfo.Center.y, 0.f))
+									&& std::find(m_EmptyHousesCoords.begin(),m_EmptyHousesCoords.end(), m_CurrentHouseInfo.Center)==m_EmptyHousesCoords.end());
+							}),
+								new Elite::BehaviorAction([this](Elite::Blackboard* b) {
+								auto agentInfo = m_pInterface->Agent_GetInfo();
+								float leaveDistance{20};
+								m_Steering.AutoOrient = true;
+								m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
+								m_pInterface->Draw_Circle(m_Target, leaveDistance, { 1,1,0 });
+								if (Elite::Distance(m_Target, agentInfo.Position) > leaveDistance)
+								{
+									m_CurrentHouseInfo = {};
+									return Elite::BehaviorState::Failure;
+								}
+								Seek(m_Target);
+								//std::cout << "Going to house\n";
+								return Elite::BehaviorState::Success;
+							})
+						}),
 				//When see house, go in house
 				new Elite::BehaviorSequence(
 				{
-					new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
-							auto vHousesInFOV = GetHousesInFOV();
-							return (vHousesInFOV.size() > 0);
+							new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
+									auto vHousesInFOV = GetHousesInFOV();
+									return (vHousesInFOV.size() > 0);
+							}),
+							new Elite::BehaviorAction([this](Elite::Blackboard* b) {
+									auto vHousesInFOV = GetHousesInFOV();
+									//Set the current house to the house you saw
+									m_CurrentHouseInfo = vHousesInFOV[0];
+									if(!(std::find(m_EmptyHousesCoords.begin(), m_EmptyHousesCoords.end(), 
+										m_CurrentHouseInfo.Center) == m_EmptyHousesCoords.end()));
+									return Elite::BehaviorState::Failure;
+									m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
+									Seek(m_Target);
+									std::cout << "Found house";
+									return Elite::BehaviorState::Success;
+							})
 					}),
-					new Elite::BehaviorAction([this](Elite::Blackboard* b) {
-							auto vHousesInFOV = GetHousesInFOV();
-							//Set the current house to the house you saw
-							m_CurrentHouseInfo = vHousesInFOV[0];
-							m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
-							Seek(m_Target);
-							std::cout << "Found house";
-							return Elite::BehaviorState::Success;
-					})
-			}),
 
 				//By default wander the world
 				new Elite::BehaviorAction(std::bind(&Plugin::Wander, this))
