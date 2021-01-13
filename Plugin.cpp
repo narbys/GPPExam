@@ -12,7 +12,7 @@ void Plugin::Initialize(IBaseInterface* pInterface, PluginInfo& info)
 
 	//Bit information about the plugin
 	//Please fill this in!!
-	info.BotName = "Spain the Coward";
+	info.BotName = "Spain the Progamer";
 	info.Student_FirstName = "Sybran";
 	info.Student_LastName = "Aerts";
 	info.Student_Class = "2DAE1";
@@ -57,9 +57,6 @@ Elite::BehaviorState Plugin::Wander()
 
 	const float nearDistance{ 2.5f };
 	Elite::Vector2 circMid{ agentInfo.Position + agentInfo.LinearVelocity.GetNormalized() * offset };
-
-	//if (Elite::DistanceSquared(agentInfo.Position, m_Target) < Elite::Square(nearDistance))
-	//{
 		float angle = angleChange * (Elite::randomFloat(2.f) - 1.f);
 		m_WanderAngle += angle;
 		float destx = radius * cos(m_WanderAngle);
@@ -70,7 +67,6 @@ Elite::BehaviorState Plugin::Wander()
 			m_Target = { 0,0 };
 		else
 			m_Target = dest + circMid;
-	//}
 	m_Steering.AutoOrient = false;
 	m_pInterface->Draw_Circle(circMid, radius, { 1,0,1 });
 	auto nextTarget = m_pInterface->NavMesh_GetClosestPathPoint(m_Target);
@@ -86,12 +82,25 @@ Elite::BehaviorState Plugin::FleeFromZombies()
 	std::vector<EntityInfo> vZombies(vThingsInFOV.size());
 	auto it = std::copy_if(vThingsInFOV.begin(), vThingsInFOV.end(), vZombies.begin(), [](auto a)->bool {return a.Type == eEntityType::ENEMY; });
 	vZombies.resize(std::distance(vZombies.begin(), it));
+
 	if (m_IsFleeing == true)
 	{
-		if(vZombies.size() > 0 && std::any_of(vZombies.begin(), vZombies.end(), [agentInfo, houseFleeRadius](const EntityInfo& z)->bool {
-			return (Elite::DistanceSquared(agentInfo.Position, z.Location) < Elite::Square(houseFleeRadius));
-			}))
-			m_IsNavFleeActivated = true;
+
+		if (vZombies.size() > 0)
+		{
+			Elite::Vector2 avPos{};
+			for (const auto& zombie : vZombies)
+			{
+				avPos += zombie.Location;
+			}
+			avPos /= float(vZombies.size());
+			m_FleePoint = avPos;
+
+			if (std::any_of(vZombies.begin(), vZombies.end(), [agentInfo, houseFleeRadius](const EntityInfo& z)->bool {
+				return (Elite::DistanceSquared(agentInfo.Position, z.Location) < Elite::Square(houseFleeRadius));
+				}))
+				m_IsNavFleeActivated = true;
+		}
 
 		if (!agentInfo.IsInHouse || m_IsNavFleeActivated==true)
 		{
@@ -99,14 +108,12 @@ Elite::BehaviorState Plugin::FleeFromZombies()
 		}
 		else if(m_IsNavFleeActivated==false)
 			Flee(m_FleePoint);
-		m_CanRun = true;
-		//m_CurrentHouseInfo = {}; //Remove the current house
+
 		m_Steering.AutoOrient = false;
 		return Elite::BehaviorState::Success;
 	}
-	else if (vZombies.size()<=0)
+	else if (vZombies.empty())
 	{
-		m_CanRun = false;
 		return Elite::BehaviorState::Failure;
 	}
 
@@ -121,19 +128,8 @@ Elite::BehaviorState Plugin::FleeFromZombies()
 	m_IsFleeing = true;
 	m_FleeTime = vZombies.size()* 3.f; //set timer for fleeing to X seconds
 
-	//if (!agentInfo.IsInHouse ||
-	//	(vZombies.size() > 0 && std::any_of(vZombies.begin(), vZombies.end(), [agentInfo, houseFleeRadius](auto z)->bool {
-	//		return Elite::Distance(z.Location, agentInfo.Position) > Elite::Square(houseFleeRadius);
-	//		})))
-	//{
-	//	m_IsFleeing = true;
-	//	NavFlee(m_FleePoint);
-	//}
-	//else
-	//	Flee(m_FleePoint);
-
 	NavFlee(m_FleePoint);
-	//std::cout << m_IsFleeing<<std::endl;
+
 	return Elite::BehaviorState::Success;
 }
 void Plugin::UpdateTimers(float dt)
@@ -146,7 +142,6 @@ void Plugin::UpdateTimers(float dt)
 		m_IsNavFleeActivated = false;
 		m_FleeTime = 0;
 		m_CanRun = false;
-		//std::cout << m_IsFleeing<<std::endl;
 	}
 
 	if (m_StayInHouseTimer > 0)
@@ -156,9 +151,24 @@ void Plugin::UpdateTimers(float dt)
 		m_IsHouseTimerSet = false;
 		m_NeedToGetOutOfHouse = true;
 	}
+
+	if (m_ClearHouseListTimer > 0)
+		m_ClearHouseListTimer -= dt;
+	else
+	{
+		m_EmptyHousesCoords.clear();
+		m_ClearHouseListTimer = 100.f;
+	}
+
+	if (m_SprintTimer > 0)
+		m_SprintTimer -= dt;
+	else
+		m_CanRun = false;
 }
 Elite::BehaviorState Plugin::GrabItems()	//No priority implemented yet
 {
+	if (m_ItemLookingFor == eItemType::_LAST && InventoryCount() == 5)
+		return Elite::BehaviorState::Failure;
 	auto agentInfo = m_pInterface->Agent_GetInfo();
 
 	auto vThingsInFOV = GetEntitiesInFOV();
@@ -175,14 +185,19 @@ Elite::BehaviorState Plugin::GrabItems()	//No priority implemented yet
 	if (Elite::DistanceSquared(currentItem.Location, agentInfo.Position) < agentInfo.GrabRange)
 	{
 		const UINT invCap = m_pInterface->Inventory_GetCapacity();
+		UINT currentSlot{};
+		bool isInvSlotEmpty{};
 		for (UINT i{}; i < invCap; i++)
 		{
 			//m_pInterface->Item_Grab(vItems[0], currentItem);
 			m_pInterface->Item_Grab(vItems[0], currentItem);
-			const bool isInvSlotEmpty = m_pInterface->Inventory_AddItem(i, currentItem);
+			isInvSlotEmpty = m_pInterface->Inventory_AddItem(i, currentItem);
 			if (isInvSlotEmpty)
 				break;
 		}
+		if (!isInvSlotEmpty)
+				return Elite::BehaviorState::Failure;
+
 		if (currentItem.Type == m_ItemLookingFor )
 		{
 			m_StayInHouseTimer = 0;
@@ -202,7 +217,7 @@ Elite::BehaviorState Plugin::EatFood()
 {
 	//Search inventory for food and eat it if Energy below certain value
 	auto agentInfo = m_pInterface->Agent_GetInfo();
-	const float useValue = 5.f;
+	const float useValue = 7.f;
 	if (agentInfo.Energy <= useValue)
 	{
 		ItemInfo currentItem;
@@ -222,13 +237,13 @@ Elite::BehaviorState Plugin::EatFood()
 		if (itemFound)
 		{
 			m_pInterface->Inventory_UseItem(itemSlot);
-			//m_NeedToGetOutOfHouse = false;
 			return Elite::BehaviorState::Success;
 		}
-		else if(agentInfo.Energy+0.2f > useValue)
+		else if(agentInfo.Energy+0.2f > useValue && agentInfo.IsInHouse)
 		{
 			std::cout << "I have no food and I am now very hungry :( \n";
-			m_NeedToGetOutOfHouse = true;
+			m_StayInHouseTimer = 3.f;
+			m_IsHouseTimerSet = true;
 			m_ItemLookingFor = eItemType::FOOD;
 		}
 	}
@@ -239,7 +254,7 @@ Elite::BehaviorState Plugin::UseMedkit()
 {
 	//Search inventory for food and eat it if Energy below certain value
 	auto agentInfo = m_pInterface->Agent_GetInfo();
-	const float useValue = 6.f;
+	const float useValue = 7.f;
 	if (agentInfo.Health <= useValue)
 	{
 		ItemInfo currentItem;
@@ -259,13 +274,15 @@ Elite::BehaviorState Plugin::UseMedkit()
 		if (itemFound)
 		{
 			m_pInterface->Inventory_UseItem(itemSlot);
-			m_NeedToGetOutOfHouse = false;
+			m_IsHouseTimerSet = false;
 			return Elite::BehaviorState::Success;
 		}
-		else
+		else if(agentInfo.Health + 0.2f > useValue && agentInfo.IsInHouse)
 		{
 			std::cout << "I have no medkit and I am very hurt :( \n";
-			m_NeedToGetOutOfHouse = true;
+			m_StayInHouseTimer = 3.f;
+			m_IsHouseTimerSet = true;
+			m_ItemLookingFor = eItemType::MEDKIT;
 		}
 	}
 
@@ -292,7 +309,7 @@ void Plugin::DiscardEmptyItems()
 {
 	const UINT invCap=m_pInterface->Inventory_GetCapacity();
 	ItemInfo currentItem{};
-	currentItem.Type = eItemType::_LAST;
+	currentItem.Type = eItemType::_LAST; //0 is PISTOL so put it to _LAST to avoid errors
 	for (UINT i{}; i < invCap; i++)
 	{
 		m_pInterface->Inventory_GetItem(i, currentItem);
@@ -322,47 +339,133 @@ void Plugin::DiscardEmptyItems()
 		case eItemType::GARBAGE:
 			m_pInterface->Inventory_RemoveItem(i);
 			break;
-		//case eItemType::RANDOM_DROP:
-		//	break;
-		//case eItemType::RANDOM_DROP_WITH_CHANCE:
-		//	break;
 		default:
 			break;
 		}
 	}
+}
+void Plugin::Shoot()
+{
+	auto agentInfo = m_pInterface->Agent_GetInfo();
+
+	auto vThingsInFOV = GetEntitiesInFOV();
+	std::vector<EntityInfo> vZombies(vThingsInFOV.size());
+	auto it = std::copy_if(vThingsInFOV.begin(), vThingsInFOV.end(), vZombies.begin(), [](auto a)->bool {return a.Type == eEntityType::ENEMY; });
+	vZombies.resize(std::distance(vZombies.begin(), it));
+
+	if (vZombies.empty())
+		return;
+
+	//Turn towards the zombie
+	const Elite::Vector2 zombieTarget = vZombies[0].Location;
+	const Elite::Vector2 toTarget{ zombieTarget - agentInfo.Position };
+
+	const  float to{ atan2f(toTarget.y, toTarget.x) + float(E_PI_2) };
+	float from{ agentInfo.Orientation };
+	from = atan2f(sinf(from), cosf(from));
+	float desired = to - from;
+
+	const float Pi2 = float(E_PI) * 2.f;
+	if (desired > E_PI)
+		desired -= Pi2;
+	else if (desired < -E_PI)
+		desired += Pi2;
+
+	// multiply desired by some value to make it go as fast as possible (30.f)
+	m_Steering.AngularVelocity = desired * agentInfo.MaxAngularSpeed;
+
+	m_Steering.AutoOrient = false;
+
+	//Check if you're facing the zombie
+	if (abs(desired) > 0.035f)
+		return;
+	else
+		m_Steering.AngularVelocity = 0;
+
+	//Search pistol
+	const UINT invCap = m_pInterface->Inventory_GetCapacity();
+	ItemInfo currentItem{};
+	currentItem.Type = eItemType::_LAST; //0 is PISTOL so put it to _LAST to avoid errors
+	for (UINT i{}; i < invCap; i++)
+	{
+		m_pInterface->Inventory_GetItem(i, currentItem);
+		if (currentItem.Type == eItemType::PISTOL)
+			if (m_pInterface->Weapon_GetAmmo(currentItem) > 0)
+				m_pInterface->Inventory_UseItem(i);	//Shoot the zombie
+	}
+}
+int Plugin::InventoryCount()
+{
+	UINT invCap = m_pInterface->Inventory_GetCapacity();
+	int itemsInInventory{};
+	ItemInfo inf{};
+	for (UINT i{}; i < invCap; i++)
+	{
+		if (m_pInterface->Inventory_GetItem(i, inf))
+			itemsInInventory++;
+	}
+	return itemsInInventory;
+}
+int Plugin::InventoryCountOfType(eItemType type)
+{
+	UINT invCap = m_pInterface->Inventory_GetCapacity();
+	int itemsInInventory{};
+	ItemInfo inf{};
+	for (UINT i{}; i < invCap; i++)
+	{
+		if (m_pInterface->Inventory_GetItem(i, inf))
+			if(inf.Type==type)
+				itemsInInventory++;
+	}
+	return itemsInInventory;
+}
+Elite::BehaviorState Plugin::FleeFromPurgeZone()
+{
+	const auto agentInfo=m_pInterface->Agent_GetInfo();
+	const auto v = GetEntitiesInFOV();
+	const auto it = std::find_if(v.begin(), v.end(), [](const EntityInfo& e) {return e.Type == eEntityType::PURGEZONE; });
+	if (it == v.end())
+		return Elite::BehaviorState::Failure;
+
+	const EntityInfo& entInf = *it;
+	PurgeZoneInfo purgeInf{};
+
+	m_pInterface->PurgeZone_GetInfo(entInf, purgeInf);
+	if (Elite::DistanceSquared(purgeInf.Center, agentInfo.Position) >= Elite::Square(purgeInf.Radius))
+	{
+		m_Target = purgeInf.Center;
+		NavFlee(purgeInf.Center);
+		m_CanRun = true;
+		return Elite::BehaviorState::Success;
+	}
+	else
+		return Elite::BehaviorState::Failure;
 }
 //Called only once
 void Plugin::DllInit()
 {
 
 	//Called when the plugin is loaded
-	//auto vHousesInFOV = GetHousesInFOV();
 	m_pTree = new Elite::BehaviorTree(nullptr,
 		new Elite::BehaviorSelector(
 			{
+				//Run from purgezones
+				new Elite::BehaviorAction(std::bind(&Plugin::FleeFromPurgeZone,this)),
 
 				//Use items
 				new Elite::BehaviorAction(std::bind(&Plugin::UseMedkit, this)),
 				new Elite::BehaviorAction(std::bind(&Plugin::EatFood, this)),
-				
-				//Grab items in range (place below zombies later, is here for debug)
+
+				//Grab items in range
 				new Elite::BehaviorAction(std::bind(&Plugin::GrabItems, this)),
 				//Flee from the zombies in vision
 				new Elite::BehaviorAction(std::bind(&Plugin::FleeFromZombies, this)),
-
 				//leave house to look for items
-				new Elite::BehaviorSequence({
-						//new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
-						//		return m_pInterface->Agent_GetInfo().IsInHouse && m_NeedToGetOutOfHouse;
-						//	}),
-						new Elite::BehaviorAction(std::bind(&Plugin::GoOutOfHouse, this))
-				}),
-
+				new Elite::BehaviorAction(std::bind(&Plugin::GoOutOfHouse, this)),
 				//Go inside Current House if it exists
 				new Elite::BehaviorSequence(
 				{
 								new Elite::BehaviorConditional([this](Elite::Blackboard* b)->bool {
-								//std::cout << m_CurrentHouseInfo.Center.x << '\n';
 								return(!(Elite::AreEqual(m_CurrentHouseInfo.Center.x,0.f) && Elite::AreEqual(m_CurrentHouseInfo.Center.y, 0.f))
 									&& std::find(m_EmptyHousesCoords.begin(),m_EmptyHousesCoords.end(), m_CurrentHouseInfo.Center)==m_EmptyHousesCoords.end());
 							}),
@@ -378,7 +481,12 @@ void Plugin::DllInit()
 									return Elite::BehaviorState::Failure;
 								}
 								Seek(m_Target);
-								//std::cout << "Going to house\n";
+								if (agentInfo.IsInHouse && m_IsHouseTimerSet == false)
+								{
+									//get out after a while
+									m_StayInHouseTimer = 10.f;
+									m_IsHouseTimerSet = true;
+								}
 								return Elite::BehaviorState::Success;
 							})
 						}),
@@ -393,15 +501,16 @@ void Plugin::DllInit()
 									auto vHousesInFOV = GetHousesInFOV();
 									//Set the current house to the house you saw
 									m_CurrentHouseInfo = vHousesInFOV[0];
-									if(!(std::find(m_EmptyHousesCoords.begin(), m_EmptyHousesCoords.end(), 
-										m_CurrentHouseInfo.Center) == m_EmptyHousesCoords.end()));
-									return Elite::BehaviorState::Failure;
+									if (!(std::find(m_EmptyHousesCoords.begin(), m_EmptyHousesCoords.end(),
+										m_CurrentHouseInfo.Center) == m_EmptyHousesCoords.end()))
+										return Elite::BehaviorState::Failure;
 									m_Target = m_pInterface->NavMesh_GetClosestPathPoint(m_CurrentHouseInfo.Center);
 									Seek(m_Target);
 									std::cout << "Found house";
 									return Elite::BehaviorState::Success;
 							})
 					}),
+
 
 				//By default wander the world
 				new Elite::BehaviorAction(std::bind(&Plugin::Wander, this))
@@ -476,10 +585,22 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 	m_pTree->Update(dt);
 	UpdateTimers(dt);
 	DiscardEmptyItems();
-	//auto steering = SteeringPlugin_Output();
+	Shoot();
 
 	//Use the Interface (IAssignmentInterface) to 'interface' with the AI_Framework
 	auto agentInfo = m_pInterface->Agent_GetInfo();
+
+	//set sprint to true when bitten
+	if (agentInfo.Bitten)
+	{
+		m_CanRun = true;
+		m_SprintTimer = { 2.f };
+	}
+	if (!agentInfo.IsInHouse&&m_IsHouseTimerSet==true)
+	{
+		m_IsHouseTimerSet = false;
+		m_StayInHouseTimer = 0;
+	}
 
 	auto nextTargetPos = m_Target; //To start you can use the mouse position as guidance
 
@@ -526,20 +647,8 @@ SteeringPlugin_Output Plugin::UpdateSteering(float dt)
 		m_pInterface->Inventory_RemoveItem(0);
 	}
 
-	////Simple Seek Behaviour (towards Target)
-	//m_Steering.LinearVelocity = nextTargetPos - agentInfo.Position; //Desired Velocity
-	//m_Steering.LinearVelocity.Normalize(); //Normalize Desired Velocity
-	//m_Steering.LinearVelocity *= agentInfo.MaxLinearSpeed; //Rescale to Max Speed
-	//Seek(nextTargetPos);
-
-	//if (Distance(nextTargetPos, agentInfo.Position) < 2.f)
-	//{
-	//	m_Steering.LinearVelocity = Elite::ZeroVector2;
-	//}
-
-	m_AngSpeed = agentInfo.MaxAngularSpeed;
 	m_Steering.AngularVelocity = m_AngSpeed; //Rotate your character to inspect the world while walking
-	//m_Steering.AutoOrient = false; //Setting AutoOrientate to TRue overrides the AngularVelocity
+	//m_Steering.AutoOrient = true; //Setting AutoOrientate to TRue overrides the AngularVelocity
 
 	m_Steering.RunMode = m_CanRun; //If RunMode is True > MaxLinSpd is increased for a limited time (till your stamina runs out)
 

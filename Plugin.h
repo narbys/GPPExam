@@ -50,6 +50,8 @@ private:
 	eItemType m_ItemLookingFor{eItemType::_LAST};
 	float m_StayInHouseTimer{};
 	bool m_IsHouseTimerSet{};
+	float m_ClearHouseListTimer{ 100.f };
+	float m_SprintTimer{};
 
 	//MyMemberFunctions
 	void Seek(const Elite::Vector2& target);
@@ -63,6 +65,11 @@ private:
 	Elite::BehaviorState UseMedkit();
 	Elite::BehaviorState GoOutOfHouse();
 	void DiscardEmptyItems();
+	void Shoot();	
+	int InventoryCount();
+	int InventoryCountOfType(eItemType type);
+	Elite::BehaviorState FleeFromPurgeZone();
+
 };
 
 //ENTRY
